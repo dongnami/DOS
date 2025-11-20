@@ -1,4 +1,4 @@
-# DOS
+# DOS (AAAI 2026)
 
 ![teaser](docs/teaser.jpg)
 [Paper](https://arxiv.org/pdf/2510.14376)
