@@ -1,7 +1,7 @@
-# DOS (AAAI 2026)
+# DOS: Directional Object Separation in Text Embeddings (AAAI 2026)
 
 ![teaser](docs/teaser.jpg)
-[Paper](https://arxiv.org/pdf/2510.14376)
+This repository contains the official implementation of the paper: [DOS: Directional Object Separation in Text Embeddings for Multi-Object Image Generation](https://arxiv.org/pdf/2510.14376)
 
 ## Prerequisites
 
@@ -18,7 +18,7 @@ pip install -e .
 
 ## How to test
 
-![method](docs/method.jpg)
+![Diagram of Directional Object Separation method](docs/method.jpg)
 
 Please refer to the following notebooks:
 - SDXL: `./notebooks/test_dos_sdxl.ipynb`
