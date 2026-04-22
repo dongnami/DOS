@@ -67,10 +67,13 @@ For more details, please refer to the script `evaluate_with_vlm.py`.
 ## Citation
 
 ``` bibtex
-@article{byun2025directional,
+@inproceedings{byun2026directional,
   title={DOS: Directional Object Separation in Text Embeddings for Multi-Object Image Generation},
-  author={Byun, Dongnam and Park, Jungwon and Ko, Jumgmin and Choi, Changin and Rhee, Wonjong},
-  journal={arXiv preprint arXiv:2510.14376},
-  year={2025}
+  author={Byun, Dongnam and Park, Jungwon and Ko, Jungmin and Choi, Changin and Rhee, Wonjong},
+  booktitle={Proceedings of the AAAI Conference on Artificial Intelligence},
+  volume={40},
+  number={4},
+  pages={2490--2497},
+  year={2026}
 }
 ```
