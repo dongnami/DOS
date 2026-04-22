@@ -2,10 +2,18 @@ import torch
 import os
 import argparse
 from diffusers import StableDiffusionXLPipeline, StableDiffusion3Pipeline
+from diffusers import PNDMScheduler
 
 import configs.envs
 from configs import benchmark
+from methods.pipeline_attend_and_excite import AttendAndExcitePipeline
+from methods.pipeline_conform import ConformXLPipeline
+from methods.TEBOpt import TEBOptSDXL
 from methods.dos import DOS, SDXLTextEncoder, SD3_5TextEncoder
+from utils import ptp_utils
+from utils.parser import get_object_indices
+from utils.ptp_utils import AttentionStore
+from configs.config import AEConfig, CONFORMConfig
 
 
 def parse_args():
@@ -55,6 +63,12 @@ def run_benchmark(args):
 def load_method(args):
     if args.method in ["sdxl", "sd3.5"]:
         method = default
+    elif args.method == "sdxl_with_tebopt":
+        method = tebopt_sdxl
+    elif args.method == "sdxl_with_attend_and_excite":
+        method = attend_and_excite_sdxl
+    elif args.method == "sdxl_with_conform":
+        method = conform_sdxl
     elif args.method == "sdxl_with_dos":
         method = dos_sdxl
     elif args.method == "sd3.5_with_dos":
@@ -65,7 +79,29 @@ def load_method(args):
 
 
 def load_pipeline(args):
-    if args.method.split("_")[0] == "sdxl":
+    if args.method in ["sdxl_with_attend_and_excite"]:
+        model_name = "stabilityai/stable-diffusion-xl-base-1.0"
+        scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", set_alpha_to_one=False, skip_prk_steps=True, steps_offset=1)
+        pipe = AttendAndExcitePipeline.from_pretrained(
+            model_name, scheduler=scheduler, torch_dtype=torch.float16, variant="fp16", use_safetensors=True
+        ).to(args.device)
+    elif args.method in ["sdxl_with_conform"]:
+        pipe_sdxl = StableDiffusionXLPipeline.from_pretrained(
+            "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16, variant="fp16", use_safetensors=True
+        ).to(args.device)
+        scheduler = PNDMScheduler(beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear", set_alpha_to_one=False, skip_prk_steps=True, steps_offset=1)
+        pipe = ConformXLPipeline(
+            vae=pipe_sdxl.vae,
+            text_encoder=pipe_sdxl.text_encoder,
+            tokenizer=pipe_sdxl.tokenizer,
+            text_encoder_2=pipe_sdxl.text_encoder_2,
+            tokenizer_2=pipe_sdxl.tokenizer_2,
+            unet=pipe_sdxl.unet,
+            scheduler=scheduler,
+            feature_extractor=pipe_sdxl.feature_extractor,
+            image_encoder=pipe_sdxl.image_encoder
+        )
+    elif args.method.split("_")[0] == "sdxl":
         pipe = StableDiffusionXLPipeline.from_pretrained(
             "stabilityai/stable-diffusion-xl-base-1.0", torch_dtype=torch.float16, variant="fp16", use_safetensors=True
         ).to(args.device)
@@ -81,6 +117,76 @@ def default(pipe, seed, target_prompt, target_objects, args):
     generator = torch.Generator(args.device).manual_seed(seed)
     image = pipe(prompt=[target_prompt], generator=generator).images[0]
     return image
+
+
+def tebopt_sdxl(pipe, seed, target_prompt, target_objects, args):
+    text_embeddings, _, pooled_text_embeddings, _ = pipe.encode_prompt([target_prompt])
+    text_embeddings, pooled_text_embeddings = text_embeddings.clone().detach(), pooled_text_embeddings.clone().detach()
+    embedding_optimizer = TEBOptSDXL(pipe=pipe, device=args.device)
+
+    text_embeddings = embedding_optimizer.optimize_text_embeddings(
+        target_prompt=target_prompt,
+        target_objects=target_objects,
+        text_embeddings=text_embeddings,
+        lr = args.lr if hasattr(args, 'lr') else None
+    )
+
+    generator = torch.Generator(args.device).manual_seed(seed)
+    image = pipe(prompt_embeds=text_embeddings, pooled_prompt_embeds=pooled_text_embeddings, generator=generator).images[0]
+    return image
+
+
+def attend_and_excite_sdxl(pipe, seed, target_prompt, target_objects, args):
+    config = AEConfig(target_prompt)
+    generator = torch.Generator(args.device).manual_seed(seed)
+    controller = AttentionStore()
+    ptp_utils.register_attention_control(pipe, controller)
+    object_indices = get_object_indices(target_prompt, target_objects, pipe.tokenizer)
+    image = pipe(prompt=target_prompt,
+                 attention_store=controller,
+                 indices_to_alter=[x[0] for x in object_indices],
+                 attention_res=config.attention_res,
+                 guidance_scale=config.guidance_scale,
+                 generator=generator,
+                 num_inference_steps=config.n_inference_steps,
+                 max_iter_to_alter=config.max_iter_to_alter,
+                 run_standard_sd=config.run_standard_sd,
+                 thresholds=config.thresholds,
+                 scale_factor=args.scale_factor if hasattr(args, 'scale_factor') else config.scale_factor,
+                 scale_range=config.scale_range,
+                 smooth_attentions=config.smooth_attentions,
+                 sigma=config.sigma,
+                 kernel_size=config.kernel_size).images[0]
+    return image
+
+
+def conform_sdxl(pipe, seed, target_prompt, target_objects, args):
+    config = CONFORMConfig()
+    generator = torch.Generator(args.device).manual_seed(seed)
+    token_groups = get_object_indices(target_prompt, target_objects, pipe.tokenizer)
+    images, _ = pipe(
+        prompt=target_prompt,
+        token_groups=token_groups,
+        guidance_scale=config.guidance_scale,
+        generator=generator,
+        num_inference_steps=config.num_inference_steps,
+        max_iter_to_alter=config.max_iter_to_alter,
+        attn_res=config.attn_res,
+        scale_factor=args.scale_factor if hasattr(args, 'scale_factor') else config.scale_factor,
+        iterative_refinement_steps=config.iterative_refinement_steps,
+        steps_to_save_attention_maps=config.steps_to_save_attention_maps,
+        do_smoothing=config.do_smoothing,
+        smoothing_sigma=config.smoothing_sigma,
+        smoothing_kernel_size=config.smoothing_kernel_size,
+        temperature=config.temperature,
+        refinement_steps=config.refinement_steps,
+        softmax_normalize=config.softmax_normalize,
+        softmax_normalize_attention_maps=config.softmax_normalize_attention_maps,
+        add_previous_attention_maps=config.add_previous_attention_maps,
+        previous_attention_map_anchor_step=config.previous_attention_map_anchor_step,
+        loss_fn=config.loss_fn,
+    )
+    return images.images[0]
 
 
 def dos_sdxl(pipe, seed, target_prompt, target_objects, args):
